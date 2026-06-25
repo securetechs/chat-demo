@@ -150,6 +150,9 @@ io.on('connection', (socket) => {
   });
 });
 
+// Health check
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
 // SPA fallback
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
@@ -161,8 +164,8 @@ const PORT = process.env.PORT || 3001;
 
 initDB()
   .then(() => {
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on 0.0.0.0:${PORT}`);
     });
   })
   .catch((err) => {
