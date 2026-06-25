@@ -1,11 +1,21 @@
 import mysql from 'mysql2/promise';
 
+// Railway sets MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD, MYSQLDATABASE
+// Also support DB_ prefixed vars and DATABASE_URL as fallbacks
+const dbHost = process.env.MYSQLHOST || process.env.DB_HOST || 'localhost';
+const dbPort = parseInt(process.env.MYSQLPORT || process.env.DB_PORT || '3306');
+const dbUser = process.env.MYSQLUSER || process.env.DB_USER || 'root';
+const dbPass = process.env.MYSQLPASSWORD || process.env.DB_PASSWORD || '';
+const dbName = process.env.MYSQLDATABASE || process.env.DB_NAME || 'chat_demo';
+
+console.log(`Connecting to MySQL at ${dbHost}:${dbPort} as ${dbUser}, db=${dbName}`);
+
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '3306'),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'chat_demo',
+  host: dbHost,
+  port: dbPort,
+  user: dbUser,
+  password: dbPass,
+  database: dbName,
   waitForConnections: true,
   connectionLimit: 10,
 });
@@ -17,13 +27,13 @@ const AVATAR_COLORS = [
 
 export async function initDB() {
   const conn = await mysql.createConnection({
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '3306'),
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
+    host: dbHost,
+    port: dbPort,
+    user: dbUser,
+    password: dbPass,
   });
 
-  await conn.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME || 'chat_demo'}\``);
+  await conn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
   await conn.end();
 
   await pool.query(`
