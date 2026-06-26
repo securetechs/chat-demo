@@ -5,22 +5,17 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import pool, { initDB, getRandomColor } from './db.js';
+import db, { initDB, getRandomColor } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = createServer(app);
 
-const clientOrigin = process.env.CLIENT_URL || 'http://localhost:5173';
-
 const io = new Server(server, {
-  cors: {
-    origin: clientOrigin === '*' ? true : clientOrigin,
-    methods: ['GET', 'POST'],
-  },
+  cors: { origin: true, methods: ['GET', 'POST'] },
 });
 
-app.use(cors({ origin: clientOrigin === '*' ? true : clientOrigin }));
+app.use(cors());
 app.use(express.json());
 
 // Serve static frontend in production
@@ -29,8 +24,7 @@ app.use(express.static(clientDist));
 
 // ── REST API ──
 
-// Login / register
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   const { username } = req.body;
   if (!username || username.trim().length < 2) {
     return res.status(400).json({ error: 'Username must be at least 2 characters' });
@@ -39,57 +33,51 @@ app.post('/api/auth/login', async (req, res) => {
   const name = username.trim().slice(0, 50);
 
   try {
-    const [existing] = await pool.query('SELECT * FROM users WHERE username = ?', [name]);
-    if (existing.length > 0) {
-      return res.json({ user: existing[0] });
-    }
+    const existing = db.prepare('SELECT * FROM users WHERE username = ?').get(name);
+    if (existing) return res.json({ user: existing });
 
     const color = getRandomColor();
-    const [result] = await pool.query(
-      'INSERT INTO users (username, avatar_color) VALUES (?, ?)',
-      [name, color]
-    );
-
-    const [newUser] = await pool.query('SELECT * FROM users WHERE id = ?', [result.insertId]);
-    res.json({ user: newUser[0] });
+    const result = db.prepare('INSERT INTO users (username, avatar_color) VALUES (?, ?)').run(name, color);
+    const newUser = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+    res.json({ user: newUser });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get rooms
-app.get('/api/rooms', async (_req, res) => {
+app.get('/api/rooms', (_req, res) => {
   try {
-    const [rooms] = await pool.query('SELECT * FROM rooms ORDER BY id');
+    const rooms = db.prepare('SELECT * FROM rooms ORDER BY id').all();
     res.json({ rooms });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get messages for a room
-app.get('/api/rooms/:roomId/messages', async (req, res) => {
+app.get('/api/rooms/:roomId/messages', (req, res) => {
   try {
-    const [messages] = await pool.query(
-      `SELECT m.id, m.content, m.created_at, m.room_id,
-              u.id as user_id, u.username, u.avatar_color
-       FROM messages m
-       JOIN users u ON m.user_id = u.id
-       WHERE m.room_id = ?
-       ORDER BY m.created_at ASC
-       LIMIT 200`,
-      [req.params.roomId]
-    );
+    const messages = db.prepare(`
+      SELECT m.id, m.content, m.created_at, m.room_id,
+             u.id as user_id, u.username, u.avatar_color
+      FROM messages m
+      JOIN users u ON m.user_id = u.id
+      WHERE m.room_id = ?
+      ORDER BY m.created_at ASC
+      LIMIT 200
+    `).all(req.params.roomId);
     res.json({ messages });
   } catch (err) {
     res.status(500).json({ error: 'Server error' });
   }
 });
 
+// Health check
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
 // ── Socket.io ──
 
-const onlineUsers = new Map(); // socketId -> { userId, username, avatarColor }
+const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id);
@@ -104,32 +92,29 @@ io.on('connection', (socket) => {
   });
 
   socket.on('room:join', (roomId) => {
-    // Leave all previous rooms except socket's own room
     for (const room of socket.rooms) {
       if (room !== socket.id) socket.leave(room);
     }
     socket.join(`room:${roomId}`);
   });
 
-  socket.on('message:send', async ({ roomId, userId, content }) => {
+  socket.on('message:send', ({ roomId, userId, content }) => {
     if (!content || !content.trim()) return;
 
     try {
-      const [result] = await pool.query(
-        'INSERT INTO messages (room_id, user_id, content) VALUES (?, ?, ?)',
-        [roomId, userId, content.trim()]
-      );
+      const result = db.prepare(
+        'INSERT INTO messages (room_id, user_id, content) VALUES (?, ?, ?)'
+      ).run(roomId, userId, content.trim());
 
-      const [rows] = await pool.query(
-        `SELECT m.id, m.content, m.created_at, m.room_id,
-                u.id as user_id, u.username, u.avatar_color
-         FROM messages m
-         JOIN users u ON m.user_id = u.id
-         WHERE m.id = ?`,
-        [result.insertId]
-      );
+      const msg = db.prepare(`
+        SELECT m.id, m.content, m.created_at, m.room_id,
+               u.id as user_id, u.username, u.avatar_color
+        FROM messages m
+        JOIN users u ON m.user_id = u.id
+        WHERE m.id = ?
+      `).get(result.lastInsertRowid);
 
-      io.to(`room:${roomId}`).emit('message:new', rows[0]);
+      io.to(`room:${roomId}`).emit('message:new', msg);
     } catch (err) {
       console.error('Message save error:', err);
     }
@@ -146,12 +131,8 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     onlineUsers.delete(socket.id);
     io.emit('users:online', Array.from(onlineUsers.values()));
-    console.log('Disconnected:', socket.id);
   });
 });
-
-// Health check
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // SPA fallback
 app.get('*', (_req, res) => {
@@ -162,13 +143,7 @@ app.get('*', (_req, res) => {
 
 const PORT = process.env.PORT || 3001;
 
-initDB()
-  .then(() => {
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server running on 0.0.0.0:${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error('Failed to initialize database:', err);
-    process.exit(1);
-  });
+initDB();
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on 0.0.0.0:${PORT}`);
+});
