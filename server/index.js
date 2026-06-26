@@ -21,8 +21,8 @@ app.use(cors());
 app.use(express.json());
 
 // Serve static frontend
-const clientDist = path.join(__dirname, '../client/dist');
-app.use(express.static(clientDist));
+const publicDir = path.join(__dirname, '../public');
+app.use(express.static(publicDir));
 
 // ── REST API ──
 
@@ -94,7 +94,7 @@ io.on('connection', (socket) => {
 
 // SPA fallback
 app.get('*', (_req, res) => {
-  res.sendFile(path.join(clientDist, 'index.html'));
+  res.sendFile(path.join(publicDir, 'index.html'));
 });
 
 const PORT = process.env.PORT || 3001;
