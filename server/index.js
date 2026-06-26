@@ -1,11 +1,13 @@
-import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import db, { initDB, getRandomColor } from './db.js';
+import {
+  initDB, getRandomColor, findUserByName, createUser,
+  getRooms, getMessages, addMessage,
+} from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -18,7 +20,7 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
-// Serve static frontend in production
+// Serve static frontend
 const clientDist = path.join(__dirname, '../client/dist');
 app.use(express.static(clientDist));
 
@@ -31,48 +33,22 @@ app.post('/api/auth/login', (req, res) => {
   }
 
   const name = username.trim().slice(0, 50);
+  const existing = findUserByName(name);
+  if (existing) return res.json({ user: existing });
 
-  try {
-    const existing = db.prepare('SELECT * FROM users WHERE username = ?').get(name);
-    if (existing) return res.json({ user: existing });
-
-    const color = getRandomColor();
-    const result = db.prepare('INSERT INTO users (username, avatar_color) VALUES (?, ?)').run(name, color);
-    const newUser = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
-    res.json({ user: newUser });
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
+  const user = createUser(name, getRandomColor());
+  res.json({ user });
 });
 
 app.get('/api/rooms', (_req, res) => {
-  try {
-    const rooms = db.prepare('SELECT * FROM rooms ORDER BY id').all();
-    res.json({ rooms });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  res.json({ rooms: getRooms() });
 });
 
 app.get('/api/rooms/:roomId/messages', (req, res) => {
-  try {
-    const messages = db.prepare(`
-      SELECT m.id, m.content, m.created_at, m.room_id,
-             u.id as user_id, u.username, u.avatar_color
-      FROM messages m
-      JOIN users u ON m.user_id = u.id
-      WHERE m.room_id = ?
-      ORDER BY m.created_at ASC
-      LIMIT 200
-    `).all(req.params.roomId);
-    res.json({ messages });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const messages = getMessages(parseInt(req.params.roomId));
+  res.json({ messages });
 });
 
-// Health check
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // ── Socket.io ──
@@ -80,8 +56,6 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
-  console.log('Connected:', socket.id);
-
   socket.on('user:join', (user) => {
     onlineUsers.set(socket.id, {
       userId: user.id,
@@ -100,24 +74,8 @@ io.on('connection', (socket) => {
 
   socket.on('message:send', ({ roomId, userId, content }) => {
     if (!content || !content.trim()) return;
-
-    try {
-      const result = db.prepare(
-        'INSERT INTO messages (room_id, user_id, content) VALUES (?, ?, ?)'
-      ).run(roomId, userId, content.trim());
-
-      const msg = db.prepare(`
-        SELECT m.id, m.content, m.created_at, m.room_id,
-               u.id as user_id, u.username, u.avatar_color
-        FROM messages m
-        JOIN users u ON m.user_id = u.id
-        WHERE m.id = ?
-      `).get(result.lastInsertRowid);
-
-      io.to(`room:${roomId}`).emit('message:new', msg);
-    } catch (err) {
-      console.error('Message save error:', err);
-    }
+    const msg = addMessage(roomId, userId, content.trim());
+    if (msg) io.to(`room:${roomId}`).emit('message:new', msg);
   });
 
   socket.on('typing:start', ({ roomId, username }) => {
@@ -139,10 +97,7 @@ app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-// ── Start ──
-
 const PORT = process.env.PORT || 3001;
-
 initDB();
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on 0.0.0.0:${PORT}`);
